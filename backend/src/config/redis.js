@@ -1,332 +1,230 @@
-// src/config/redis.js
 import Redis from 'ioredis';
-import { createLogger } from '../utils/logger.util.js';
+import logger from './logger.js';
 
-const logger = createLogger('Redis');
-
-/**
- * Redis client instance
- */
 let redisClient = null;
-let isConnected = false;
+let redisSubscriber = null;
+let redisPublisher = null;
 
-/**
- * Default Redis configuration
- */
-const defaultConfig = {
-  maxRetriesPerRequest: 3,
-  retryDelayOnFailover: 100,
-  enableReadyCheck: true,
-  enableOfflineQueue: true,
-  connectTimeout: 10000,
-  commandTimeout: 5000,
-  lazyConnect: true,
-  showFriendlyErrorStack: process.env.NODE_ENV !== 'production',
-};
-
-/**
- * Parse Redis URL and return configuration
- * @param {string} url - Redis URL
- * @returns {Object}
- */
-const parseRedisUrl = (url) => {
-  if (!url) {
-    return null;
-  }
-
-  try {
-    const parsedUrl = new URL(url);
-    return {
-      host: parsedUrl.hostname,
-      port: parseInt(parsedUrl.port, 10) || 6379,
-      password: parsedUrl.password || undefined,
-      username: parsedUrl.username || undefined,
-      tls: url.startsWith('rediss://') ? {} : undefined,
-    };
-  } catch (error) {
-    logger.error('Failed to parse Redis URL:', error);
-    return null;
-  }
-};
-
-/**
- * Create Redis client
- * @returns {Redis}
- */
-export const createRedisClient = () => {
-  const redisUrl = process.env.REDIS_URL;
-
-  if (!redisUrl) {
-    logger.warn('REDIS_URL not defined, Redis features will be disabled');
-    return null;
-  }
-
-  const urlConfig = parseRedisUrl(redisUrl);
-
-  if (!urlConfig) {
-    logger.error('Invalid Redis URL configuration');
-    return null;
-  }
-
-  const config = {
-    ...defaultConfig,
-    ...urlConfig,
+// Create Redis client
+const createRedisClient = (options = {}) => {
+  const redisOptions = {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT) || 6379,
+    password: process.env.REDIS_PASSWORD || undefined,
+    db: parseInt(process.env.REDIS_DB) || 0,
+    retryStrategy: (times) => {
+      const delay = Math.min(times * 50, 2000);
+      return delay;
+    },
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    ...options
   };
 
-  const client = new Redis(config);
-
-  // Event handlers
-  client.on('connect', () => {
-    logger.info('Redis client connecting...');
-  });
-
-  client.on('ready', () => {
-    isConnected = true;
-    logger.info('Redis client ready');
-  });
-
-  client.on('error', (error) => {
-    isConnected = false;
-    logger.error('Redis client error:', error.message);
-  });
-
-  client.on('close', () => {
-    isConnected = false;
-    logger.warn('Redis client connection closed');
-  });
-
-  client.on('reconnecting', (delay) => {
-    logger.info(`Redis client reconnecting in ${delay}ms`);
-  });
-
-  client.on('end', () => {
-    isConnected = false;
-    logger.info('Redis client connection ended');
-  });
-
-  return client;
-};
-
-/**
- * Connect to Redis
- * @returns {Promise<Redis>}
- */
-export const connectRedis = async () => {
-  if (redisClient && isConnected) {
-    logger.info('Using existing Redis connection');
-    return redisClient;
+  // If REDIS_URL is provided, use it instead
+  if (process.env.REDIS_URL) {
+    return new Redis(process.env.REDIS_URL, redisOptions);
   }
 
-  redisClient = createRedisClient();
+  return new Redis(redisOptions);
+};
 
+// Initialize Redis connections
+export const initRedis = () => {
   if (!redisClient) {
-    return null;
+    redisClient = createRedisClient();
+    
+    // Event listeners
+    redisClient.on('connect', () => {
+      logger.info('Redis client connected');
+    });
+
+    redisClient.on('ready', () => {
+      logger.info('Redis client ready');
+    });
+
+    redisClient.on('error', (error) => {
+      logger.error('Redis client error:', error);
+    });
+
+    redisClient.on('close', () => {
+      logger.warn('Redis client connection closed');
+    });
+
+    redisClient.on('reconnecting', () => {
+      logger.info('Redis client reconnecting...');
+    });
   }
 
-  try {
-    await redisClient.connect();
-    logger.info('Redis connected successfully');
-    return redisClient;
-  } catch (error) {
-    logger.error('Redis connection error:', error);
-    return null;
-  }
-};
-
-/**
- * Get Redis client instance
- * @returns {Redis|null}
- */
-export const getRedisClient = () => {
   return redisClient;
 };
 
-/**
- * Disconnect from Redis
- * @returns {Promise<void>}
- */
-export const disconnectRedis = async () => {
+// Get Redis client
+export const getRedisClient = () => {
   if (!redisClient) {
-    return;
+    return initRedis();
   }
-
-  try {
-    await redisClient.quit();
-    isConnected = false;
-    redisClient = null;
-    logger.info('Redis disconnected successfully');
-  } catch (error) {
-    logger.error('Error disconnecting from Redis:', error);
-    throw error;
-  }
+  return redisClient;
 };
 
-/**
- * Check if Redis is connected
- * @returns {boolean}
- */
-export const isRedisConnected = () => {
-  return isConnected && redisClient?.status === 'ready';
+// Get Redis subscriber (for pub/sub)
+export const getRedisSubscriber = () => {
+  if (!redisSubscriber) {
+    redisSubscriber = createRedisClient();
+  }
+  return redisSubscriber;
 };
 
-/**
- * Redis health check
- * @returns {Promise<Object>}
- */
+// Get Redis publisher (for pub/sub)
+export const getRedisPublisher = () => {
+  if (!redisPublisher) {
+    redisPublisher = createRedisClient();
+  }
+  return redisPublisher;
+};
+
+// Health check for Redis
 export const checkRedisHealth = async () => {
   try {
-    if (!redisClient || !isConnected) {
-      return {
-        status: 'disconnected',
-        healthy: false,
-        message: 'Redis is not connected',
-      };
+    const client = getRedisClient();
+    await client.ping();
+    return {
+      status: 'healthy',
+      host: client.options.host,
+      port: client.options.port,
+      db: client.options.db
+    };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      error: error.message
+    };
+  }
+};
+
+// Cache operations
+export const cache = {
+  // Set cache with expiry
+  set: async (key, value, ttl = 3600) => {
+    try {
+      const client = getRedisClient();
+      const serialized = JSON.stringify(value);
+      await client.setex(key, ttl, serialized);
+      return true;
+    } catch (error) {
+      logger.error('Cache set error:', error);
+      return false;
     }
+  },
 
-    const pingResult = await redisClient.ping();
+  // Get cache
+  get: async (key) => {
+    try {
+      const client = getRedisClient();
+      const data = await client.get(key);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      logger.error('Cache get error:', error);
+      return null;
+    }
+  },
 
-    return {
-      status: 'connected',
-      healthy: pingResult === 'PONG',
-      latency: await measureLatency(),
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      healthy: false,
-      message: error.message,
-    };
+  // Delete cache
+  del: async (key) => {
+    try {
+      const client = getRedisClient();
+      await client.del(key);
+      return true;
+    } catch (error) {
+      logger.error('Cache delete error:', error);
+      return false;
+    }
+  },
+
+  // Check if key exists
+  exists: async (key) => {
+    try {
+      const client = getRedisClient();
+      const exists = await client.exists(key);
+      return exists === 1;
+    } catch (error) {
+      logger.error('Cache exists error:', error);
+      return false;
+    }
+  },
+
+  // Set multiple cache items
+  mset: async (items, ttl = 3600) => {
+    try {
+      const client = getRedisClient();
+      const pipeline = client.pipeline();
+      
+      items.forEach(({ key, value }) => {
+        const serialized = JSON.stringify(value);
+        pipeline.setex(key, ttl, serialized);
+      });
+      
+      await pipeline.exec();
+      return true;
+    } catch (error) {
+      logger.error('Cache mset error:', error);
+      return false;
+    }
+  },
+
+  // Get multiple cache items
+  mget: async (keys) => {
+    try {
+      const client = getRedisClient();
+      const data = await client.mget(keys);
+      return data.map(item => item ? JSON.parse(item) : null);
+    } catch (error) {
+      logger.error('Cache mget error:', error);
+      return keys.map(() => null);
+    }
+  },
+
+  // Increment counter
+  incr: async (key) => {
+    try {
+      const client = getRedisClient();
+      return await client.incr(key);
+    } catch (error) {
+      logger.error('Cache incr error:', error);
+      return null;
+    }
+  },
+
+  // Decrement counter
+  decr: async (key) => {
+    try {
+      const client = getRedisClient();
+      return await client.decr(key);
+    } catch (error) {
+      logger.error('Cache decr error:', error);
+      return null;
+    }
   }
 };
 
-/**
- * Measure Redis latency
- * @returns {Promise<number>}
- */
-const measureLatency = async () => {
-  if (!redisClient) return -1;
-
-  const start = Date.now();
-  await redisClient.ping();
-  return Date.now() - start;
-};
-
-/**
- * Cache TTL configurations (in seconds)
- */
-export const cacheTTL = {
-  short: parseInt(process.env.CACHE_TTL_SHORT, 10) || 300, // 5 minutes
-  medium: parseInt(process.env.CACHE_TTL_MEDIUM, 10) || 1800, // 30 minutes
-  long: parseInt(process.env.CACHE_TTL_LONG, 10) || 86400, // 24 hours
-  session: 86400 * 7, // 7 days
-};
-
-/**
- * Cache key prefixes
- */
-export const cacheKeys = {
-  session: 'session:',
-  user: 'user:',
-  solution: 'solution:',
-  job: 'job:',
-  listing: 'listing:',
-  chat: 'chat:',
-  notification: 'notification:',
-  rateLimit: 'ratelimit:',
-  otp: 'otp:',
-  resetToken: 'reset:',
-  verifyToken: 'verify:',
-  refreshToken: 'refresh:',
-  blacklist: 'blacklist:',
-  leaderboard: 'leaderboard:',
-  analytics: 'analytics:',
-};
-
-/**
- * Set cache value
- * @param {string} key - Cache key
- * @param {any} value - Value to cache
- * @param {number} ttl - Time to live in seconds
- * @returns {Promise<string|null>}
- */
-export const setCache = async (key, value, ttl = cacheTTL.medium) => {
-  if (!redisClient) return null;
-
-  try {
-    const serializedValue = JSON.stringify(value);
-    return await redisClient.setex(key, ttl, serializedValue);
-  } catch (error) {
-    logger.error(`Cache set error for key ${key}:`, error);
-    return null;
+// Close Redis connections
+export const closeRedis = async () => {
+  if (redisClient) {
+    await redisClient.quit();
+    redisClient = null;
   }
-};
-
-/**
- * Get cache value
- * @param {string} key - Cache key
- * @returns {Promise<any|null>}
- */
-export const getCache = async (key) => {
-  if (!redisClient) return null;
-
-  try {
-    const value = await redisClient.get(key);
-    return value ? JSON.parse(value) : null;
-  } catch (error) {
-    logger.error(`Cache get error for key ${key}:`, error);
-    return null;
+  
+  if (redisSubscriber) {
+    await redisSubscriber.quit();
+    redisSubscriber = null;
   }
-};
-
-/**
- * Delete cache value
- * @param {string} key - Cache key
- * @returns {Promise<number|null>}
- */
-export const deleteCache = async (key) => {
-  if (!redisClient) return null;
-
-  try {
-    return await redisClient.del(key);
-  } catch (error) {
-    logger.error(`Cache delete error for key ${key}:`, error);
-    return null;
+  
+  if (redisPublisher) {
+    await redisPublisher.quit();
+    redisPublisher = null;
   }
+  
+  logger.info('Redis connections closed');
 };
 
-/**
- * Delete cache by pattern
- * @param {string} pattern - Key pattern
- * @returns {Promise<number>}
- */
-export const deleteCacheByPattern = async (pattern) => {
-  if (!redisClient) return 0;
-
-  try {
-    const keys = await redisClient.keys(pattern);
-    if (keys.length === 0) return 0;
-    return await redisClient.del(...keys);
-  } catch (error) {
-    logger.error(`Cache delete by pattern error for ${pattern}:`, error);
-    return 0;
-  }
-};
-
-/**
- * Redis configuration object
- */
-export const redisConfig = {
-  connect: connectRedis,
-  disconnect: disconnectRedis,
-  getClient: getRedisClient,
-  isConnected: isRedisConnected,
-  healthCheck: checkRedisHealth,
-  cacheTTL,
-  cacheKeys,
-  setCache,
-  getCache,
-  deleteCache,
-  deleteCacheByPattern,
-};
-
-export default redisConfig;
+export default getRedisClient;

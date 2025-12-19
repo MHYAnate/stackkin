@@ -1,244 +1,130 @@
-// src/config/cors.js
-import { createLogger } from '../utils/logger.util.js';
+import cors from 'cors';
+import logger from './logger.js';
 
-const logger = createLogger('CORS');
-
-/**
- * Parse allowed origins from environment
- * @returns {string[]}
- */
+// Parse allowed origins from environment variable
 const parseAllowedOrigins = () => {
-  const origins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:3000';
-  return origins.split(',').map((origin) => origin.trim());
-};
-
-/**
- * Allowed origins list
- */
-const allowedOrigins = parseAllowedOrigins();
-
-/**
- * Check if origin is allowed
- * @param {string} origin - Request origin
- * @returns {boolean}
- */
-const isOriginAllowed = (origin) => {
-  // Allow requests with no origin (like mobile apps or curl)
-  if (!origin) return true;
-
-  // Check if origin is in allowed list
-  if (allowedOrigins.includes(origin)) return true;
-
-  // Check for wildcard patterns
-  for (const allowed of allowedOrigins) {
-    if (allowed === '*') return true;
-    if (allowed.includes('*')) {
-      const pattern = new RegExp('^' + allowed.replace(/\*/g, '.*') + '$');
-      if (pattern.test(origin)) return true;
-    }
+  const origins = process.env.ALLOWED_ORIGINS || '';
+  const defaultOrigins = [
+    'http://localhost:3000',
+    'http://localhost:4000',
+    'https://stackkin.com',
+    'https://www.stackkin.com'
+  ];
+  
+  if (!origins) {
+    return defaultOrigins;
   }
-
-  return false;
+  
+  return origins.split(',').map(origin => origin.trim()).filter(Boolean);
 };
 
-/**
- * CORS options for Express
- */
-export const corsOptions = {
-  /**
-   * Dynamic origin validation
-   * @param {string} origin - Request origin
-   * @param {Function} callback - Callback function
-   */
+// CORS options
+const corsOptions = {
   origin: (origin, callback) => {
-    if (isOriginAllowed(origin)) {
-      callback(null, true);
-    } else {
-      logger.warn(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-
-  /**
-   * Allowed HTTP methods
-   */
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-
-  /**
-   * Allowed headers
-   */
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
-    'Accept',
-    'Origin',
-    'Access-Control-Request-Method',
-    'Access-Control-Request-Headers',
-    'X-CSRF-Token',
-    'X-Request-ID',
-    'Apollo-Require-Preflight',
-  ],
-
-  /**
-   * Headers exposed to the client
-   */
-  exposedHeaders: [
-    'X-Request-ID',
-    'X-RateLimit-Limit',
-    'X-RateLimit-Remaining',
-    'X-RateLimit-Reset',
-    'Content-Disposition',
-  ],
-
-  /**
-   * Allow credentials (cookies, authorization headers)
-   */
-  credentials: true,
-
-  /**
-   * Preflight request cache duration (24 hours)
-   */
-  maxAge: 86400,
-
-  /**
-   * Handle preflight successfully
-   */
-  preflightContinue: false,
-
-  /**
-   * Success status for preflight
-   */
-  optionsSuccessStatus: 204,
-};
-
-/**
- * CORS options for GraphQL endpoint
- */
-export const graphqlCorsOptions = {
-  ...corsOptions,
-  origin: (origin, callback) => {
-    // GraphQL playground/introspection might not have origin in development
-    if (process.env.NODE_ENV === 'development' && !origin) {
-      callback(null, true);
-      return;
+    const allowedOrigins = parseAllowedOrigins();
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      return callback(null, true);
     }
     
-    if (isOriginAllowed(origin)) {
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      logger.warn(`GraphQL CORS blocked origin: ${origin}`);
+      logger.warn(`CORS blocked request from origin: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'X-Access-Token',
+    'X-Refresh-Token',
+    'X-Session-Id',
+    'X-Two-Factor-Token',
+    'X-Client-Version',
+    'X-Device-Id'
+  ],
+  exposedHeaders: [
+    'X-Access-Token',
+    'X-Refresh-Token',
+    'X-Session-Id',
+    'X-RateLimit-Limit',
+    'X-RateLimit-Remaining',
+    'X-RateLimit-Reset'
+  ],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
-/**
- * CORS options for WebSocket connections
- */
+// CORS middleware for WebSocket/Socket.IO
 export const socketCorsOptions = {
   origin: (origin, callback) => {
-    if (isOriginAllowed(origin)) {
+    const allowedOrigins = parseAllowedOrigins();
+    
+    if (!origin || allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      logger.warn(`Socket CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'), false);
+      callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST'],
   credentials: true,
+  methods: ['GET', 'POST']
 };
 
-/**
- * CORS options for file uploads
- */
-export const uploadCorsOptions = {
-  ...corsOptions,
-  allowedHeaders: [
-    ...corsOptions.allowedHeaders,
-    'Content-Length',
-    'Content-Disposition',
-    'X-Upload-Content-Type',
-    'X-Upload-Content-Length',
-  ],
+// Create CORS middleware
+export const corsMiddleware = cors(corsOptions);
+
+// Preflight request handler
+export const handlePreflight = (req, res) => {
+  res.status(200).end();
 };
 
-/**
- * CORS options for webhook endpoints (allow all origins)
- */
-export const webhookCorsOptions = {
-  origin: true,
-  methods: ['POST'],
-  allowedHeaders: [
-    'Content-Type',
-    'X-Webhook-Signature',
-    'Zainpay-Signature',
-  ],
-  credentials: false,
-};
-
-/**
- * Get allowed origins list
- * @returns {string[]}
- */
-export const getAllowedOrigins = () => allowedOrigins;
-
-/**
- * Add origin to allowed list at runtime
- * @param {string} origin - Origin to add
- */
-export const addAllowedOrigin = (origin) => {
-  if (!allowedOrigins.includes(origin)) {
-    allowedOrigins.push(origin);
-    logger.info(`Added origin to CORS whitelist: ${origin}`);
+// Add CORS headers manually (for edge cases)
+export const addCorsHeaders = (req, res, next) => {
+  const origin = req.headers.origin;
+  const allowedOrigins = parseAllowedOrigins();
+  
+  if (origin && (allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development')) {
+    res.header('Access-Control-Allow-Origin', origin);
   }
-};
-
-/**
- * Remove origin from allowed list at runtime
- * @param {string} origin - Origin to remove
- */
-export const removeAllowedOrigin = (origin) => {
-  const index = allowedOrigins.indexOf(origin);
-  if (index > -1) {
-    allowedOrigins.splice(index, 1);
-    logger.info(`Removed origin from CORS whitelist: ${origin}`);
+  
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Access-Token, X-Refresh-Token, X-Session-Id, X-Two-Factor-Token, X-Client-Version, X-Device-Id'
+  );
+  res.header('Access-Control-Expose-Headers', 
+    'X-Access-Token, X-Refresh-Token, X-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset'
+  );
+  res.header('Access-Control-Max-Age', '86400');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
+  
+  next();
 };
 
-/**
- * CORS error handler middleware
- * @param {Error} err - CORS error
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const corsErrorHandler = (err, req, res, next) => {
-  if (err.message === 'Not allowed by CORS') {
-    logger.warn(`CORS error for origin: ${req.headers.origin}, path: ${req.path}`);
-    return res.status(403).json({
-      success: false,
-      error: 'CORS_ERROR',
-      message: 'Cross-Origin Request Blocked',
-    });
-  }
-  next(err);
+// Check CORS configuration
+export const checkCorsConfig = () => {
+  const allowedOrigins = parseAllowedOrigins();
+  
+  logger.info('CORS Configuration:', {
+    allowedOrigins,
+    environment: process.env.NODE_ENV
+  });
+  
+  return {
+    allowedOrigins,
+    environment: process.env.NODE_ENV
+  };
 };
 
-/**
- * CORS configuration export
- */
-export const corsConfig = {
-  options: corsOptions,
-  graphqlOptions: graphqlCorsOptions,
-  socketOptions: socketCorsOptions,
-  uploadOptions: uploadCorsOptions,
-  webhookOptions: webhookCorsOptions,
-  getAllowedOrigins,
-  addAllowedOrigin,
-  removeAllowedOrigin,
-  errorHandler: corsErrorHandler,
-  isOriginAllowed,
-};
-
-export default corsConfig;
+export default corsMiddleware;

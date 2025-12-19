@@ -1,428 +1,212 @@
-// src/config/security.js
-import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import hpp from 'hpp';
-import { createLogger } from '../utils/logger.util.js';
-import { getRedisClient } from './redis.js';
+import xss from 'xss-clean';
+import mongoSanitize from 'express-mongo-sanitize';
+import crypto from 'crypto';
+import logger from './logger.js';
 
-const logger = createLogger('Security');
-
-/**
- * Helmet security configuration
- */
-export const helmetConfig = helmet({
-  // Content Security Policy
+// Security headers configuration
+export const securityHeaders = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", 'https://dev.zainpay.ng', 'https://api.zainpay.ng'],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-      imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
-      connectSrc: [
-        "'self'",
-        process.env.FRONTEND_URL,
-        'https://dev.zainpay.ng',
-        'https://api.zainpay.ng',
-        'wss:',
-        'ws:',
-      ],
-      frameSrc: ["'self'", 'https://dev.zainpay.ng', 'https://api.zainpay.ng'],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+      imgSrc: ["'self'", "data:", "https://res.cloudinary.com", "https://api.qrserver.com"],
+      connectSrc: ["'self'", "https://api.resend.com", "wss://localhost:4000", process.env.CLIENT_URL],
+      frameSrc: ["'self'"],
       objectSrc: ["'none'"],
-      upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null,
-    },
+      upgradeInsecureRequests: []
+    }
   },
-
-  // Cross-Origin configurations
   crossOriginEmbedderPolicy: false,
-  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-
-  // DNS Prefetch Control
-  dnsPrefetchControl: { allow: true },
-
-  // Expect-CT (Certificate Transparency)
-  expectCt: {
-    maxAge: 86400,
-    enforce: true,
-  },
-
-  // Frameguard (clickjacking protection)
-  frameguard: { action: 'sameorigin' },
-
-  // Hide X-Powered-By header
-  hidePoweredBy: true,
-
-  // HSTS (HTTP Strict Transport Security)
-  hsts: {
-    maxAge: 31536000, // 1 year
-    includeSubDomains: true,
-    preload: true,
-  },
-
-  // IE No Open
-  ieNoOpen: true,
-
-  // No Sniff (prevent MIME type sniffing)
-  noSniff: true,
-
-  // Origin Agent Cluster
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin" },
   originAgentCluster: true,
-
-  // Permitted Cross-Domain Policies
-  permittedCrossDomainPolicies: { permittedPolicies: 'none' },
-
-  // Referrer Policy
-  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-
-  // XSS Filter
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  strictTransportSecurity: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
   xssFilter: true,
+  noSniff: true,
+  frameguard: { action: "deny" }
 });
 
-/**
- * Rate limit configurations
- */
-export const rateLimitConfigs = {
-  /**
-   * General API rate limit
-   */
-  general: {
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000, // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
-    message: {
-      success: false,
-      error: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many requests, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    skipSuccessfulRequests: process.env.RATE_LIMIT_SKIP_SUCCESSFUL_REQUESTS === 'true',
-    keyGenerator: (req) => {
-      return req.ip || req.headers['x-forwarded-for'] || 'unknown';
-    },
+// Rate limiting configuration
+export const rateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.RATE_LIMIT_MAX || 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again after 15 minutes'
   },
-
-  /**
-   * Authentication rate limit (stricter)
-   */
-  auth: {
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 10, // 10 attempts per window
-    message: {
-      success: false,
-      error: 'AUTH_RATE_LIMIT_EXCEEDED',
-      message: 'Too many authentication attempts, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    skipSuccessfulRequests: true,
-  },
-
-  /**
-   * Password reset rate limit
-   */
-  passwordReset: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 5,
-    message: {
-      success: false,
-      error: 'PASSWORD_RESET_RATE_LIMIT',
-      message: 'Too many password reset attempts, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-  },
-
-  /**
-   * File upload rate limit
-   */
-  upload: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 50,
-    message: {
-      success: false,
-      error: 'UPLOAD_RATE_LIMIT',
-      message: 'Too many file uploads, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-  },
-
-  /**
-   * GraphQL rate limit
-   */
-  graphql: {
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 60, // 60 requests per minute
-    message: {
-      success: false,
-      error: 'GRAPHQL_RATE_LIMIT',
-      message: 'Too many GraphQL requests, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-  },
-
-  /**
-   * Verification request rate limit
-   */
-  verification: {
-    windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    max: 5,
-    message: {
-      success: false,
-      error: 'VERIFICATION_RATE_LIMIT',
-      message: 'Too many verification requests, please try again tomorrow.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-  },
-
-  /**
-   * Payment initialization rate limit
-   */
-  payment: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 30,
-    message: {
-      success: false,
-      error: 'PAYMENT_RATE_LIMIT',
-      message: 'Too many payment attempts, please try again later.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-  },
-};
-
-/**
- * Create Redis-backed rate limiter store
- * @returns {Object|undefined}
- */
-const createRedisStore = () => {
-  const client = getRedisClient();
-  
-  if (!client) {
-    logger.warn('Redis not available, using memory store for rate limiting');
-    return undefined;
+  skip: (req) => {
+    // Skip rate limiting for health checks and in development
+    return req.path === '/health' || process.env.NODE_ENV === 'development';
   }
+});
 
-  // Using a simple Redis store implementation
-  return {
-    async increment(key) {
-      const results = await client.multi()
-        .incr(key)
-        .pexpire(key, rateLimitConfigs.general.windowMs)
-        .exec();
-      
-      return {
-        totalHits: results[0][1],
-        resetTime: new Date(Date.now() + rateLimitConfigs.general.windowMs),
-      };
-    },
-    async decrement(key) {
-      await client.decr(key);
-    },
-    async resetKey(key) {
-      await client.del(key);
-    },
-  };
-};
+// API-specific rate limiting
+export const apiRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: {
+    success: false,
+    message: 'Too many API requests, please try again later'
+  }
+});
 
-/**
- * Create rate limiter middleware
- * @param {string} type - Rate limit type
- * @returns {Function}
- */
-export const createRateLimiter = (type = 'general') => {
-  const config = rateLimitConfigs[type] || rateLimitConfigs.general;
-  
-  return rateLimit({
-    ...config,
-    store: createRedisStore(),
-    handler: (req, res) => {
-      logger.warn(`Rate limit exceeded: ${type} - IP: ${req.ip}, Path: ${req.path}`);
-      res.status(429).json(config.message);
-    },
-  });
-};
+// Auth-specific rate limiting (stricter)
+export const authRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 attempts per hour
+  message: {
+    success: false,
+    message: 'Too many authentication attempts, please try again after an hour'
+  }
+});
 
-/**
- * HPP (HTTP Parameter Pollution) protection configuration
- */
-export const hppConfig = hpp({
+// HPP (HTTP Parameter Pollution) protection
+export const hppProtection = hpp({
   whitelist: [
-    'category',
-    'tags',
-    'techStack',
-    'countries',
-    'languages',
-    'sort',
     'filter',
-    'status',
-  ],
+    'page',
+    'limit',
+    'sort',
+    'fields',
+    'search',
+    'category'
+  ]
 });
 
-/**
- * Security headers middleware
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const securityHeaders = (req, res, next) => {
-  // Add additional security headers
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  
-  // Remove fingerprinting headers
-  res.removeHeader('X-Powered-By');
-  
-  next();
-};
+// XSS protection
+export const xssProtection = xss();
 
-/**
- * Request ID middleware
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const requestId = (req, res, next) => {
-  const id = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  req.id = id;
-  res.setHeader('X-Request-ID', id);
-  next();
-};
-
-/**
- * Trusted proxy configuration
- * @returns {string|boolean|number}
- */
-export const getTrustProxy = () => {
-  if (process.env.NODE_ENV === 'production') {
-    // Trust first proxy (Railway, Vercel, etc.)
-    return 1;
+// NoSQL injection protection
+export const noSqlInjectionProtection = mongoSanitize({
+  replaceWith: '_',
+  onSanitize: ({ req, key }) => {
+    logger.warn('NoSQL injection attempt detected', {
+      ip: req.ip,
+      key,
+      path: req.path,
+      method: req.method
+    });
   }
-  return false;
+});
+
+// Generate CSRF token
+export const generateCsrfToken = () => {
+  return crypto.randomBytes(32).toString('hex');
 };
 
-/**
- * IP extraction middleware
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const extractClientIp = (req, res, next) => {
-  req.clientIp = req.ip || 
-    req.headers['x-forwarded-for']?.split(',')[0].trim() || 
-    req.headers['x-real-ip'] ||
-    req.connection.remoteAddress;
-  next();
+// Validate CSRF token
+export const validateCsrfToken = (token, sessionToken) => {
+  if (!token || !sessionToken) {
+    return false;
+  }
+  
+  // Use timing-safe comparison
+  return crypto.timingSafeEqual(
+    Buffer.from(token),
+    Buffer.from(sessionToken)
+  );
 };
 
-/**
- * Sanitize request body (basic XSS prevention)
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const sanitizeRequest = (req, res, next) => {
-  const sanitize = (obj) => {
-    if (typeof obj === 'string') {
-      return obj
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;');
+// Security middleware wrapper
+export const applySecurityMiddleware = (app) => {
+  // Apply security headers
+  app.use(securityHeaders);
+  
+  // Apply rate limiting
+  if (process.env.RATE_LIMIT_ENABLED !== 'false') {
+    app.use('/api', apiRateLimiter);
+    app.use('/auth', authRateLimiter);
+    app.use(rateLimiter);
+  }
+  
+  // Apply other security middleware
+  app.use(hppProtection);
+  app.use(xssProtection);
+  app.use(noSqlInjectionProtection);
+  
+  // Custom security headers
+  app.use((req, res, next) => {
+    // Prevent clickjacking
+    res.setHeader('X-Frame-Options', 'DENY');
+    
+    // Enable XSS filter in older browsers
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    
+    // Prevent MIME type sniffing
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    
+    // Referrer policy
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    
+    // Permissions policy
+    res.setHeader('Permissions-Policy', 
+      'camera=(), microphone=(), geolocation=(), interest-cohort=()'
+    );
+    
+    // Feature policy (for older browsers)
+    res.setHeader('Feature-Policy',
+      "camera 'none'; microphone 'none'; geolocation 'none'"
+    );
+    
+    // Cache control for sensitive endpoints
+    if (req.path.includes('/api') || req.path.includes('/auth')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Surrogate-Control', 'no-store');
     }
-    if (typeof obj === 'object' && obj !== null) {
-      for (const key in obj) {
-        obj[key] = sanitize(obj[key]);
-      }
-    }
-    return obj;
+    
+    next();
+  });
+  
+  logger.info('Security middleware applied');
+};
+
+// Security audit logging
+export const securityAudit = (req, action, details = {}) => {
+  const auditDetails = {
+    timestamp: new Date().toISOString(),
+    ip: req.ip,
+    method: req.method,
+    path: req.path,
+    userAgent: req.get('user-agent'),
+    userId: req.user?._id,
+    action,
+    ...details
   };
-
-  if (req.body) {
-    req.body = sanitize(req.body);
-  }
-  if (req.query) {
-    req.query = sanitize(req.query);
-  }
-  if (req.params) {
-    req.params = sanitize(req.params);
-  }
-
-  next();
+  
+  logger.warn('Security Audit:', auditDetails);
+  
+  // Store in audit collection if needed
+  // This could be saved to MongoDB for long-term auditing
 };
 
-/**
- * Block suspicious user agents
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
- */
-export const blockSuspiciousAgents = (req, res, next) => {
-  const suspiciousPatterns = [
-    /sqlmap/i,
-    /nikto/i,
-    /nmap/i,
-    /masscan/i,
-    /python-requests/i,
-    /curl/i,
-  ];
-
-  const userAgent = req.headers['user-agent'] || '';
-
-  // Only block in production and for non-API routes
-  if (process.env.NODE_ENV === 'production') {
-    for (const pattern of suspiciousPatterns) {
-      if (pattern.test(userAgent)) {
-        logger.warn(`Blocked suspicious user agent: ${userAgent}, IP: ${req.ip}`);
-        return res.status(403).json({
-          success: false,
-          error: 'FORBIDDEN',
-          message: 'Access denied',
-        });
-      }
-    }
-  }
-
-  next();
+// Check security configuration
+export const checkSecurityConfig = () => {
+  const config = {
+    rateLimitEnabled: process.env.RATE_LIMIT_ENABLED !== 'false',
+    xssProtection: true,
+    hppProtection: true,
+    noSqlInjectionProtection: true,
+    csrfProtection: process.env.NODE_ENV === 'production',
+    environment: process.env.NODE_ENV
+  };
+  
+  logger.info('Security Configuration:', config);
+  
+  return config;
 };
 
-/**
- * GraphQL depth limit configuration
- */
-export const graphqlDepthLimit = parseInt(process.env.GRAPHQL_DEPTH_LIMIT, 10) || 10;
-
-/**
- * GraphQL complexity configuration
- */
-export const graphqlComplexityConfig = {
-  maximumComplexity: 1000,
-  onComplete: (complexity) => {
-    logger.debug(`GraphQL query complexity: ${complexity}`);
-  },
-};
-
-/**
- * Security configuration export
- */
-export const securityConfig = {
-  helmet: helmetConfig,
-  rateLimitConfigs,
-  createRateLimiter,
-  hpp: hppConfig,
-  securityHeaders,
-  requestId,
-  getTrustProxy,
-  extractClientIp,
-  sanitizeRequest,
-  blockSuspiciousAgents,
-  graphqlDepthLimit,
-  graphqlComplexityConfig,
-};
-
-export default securityConfig;
+export default applySecurityMiddleware;

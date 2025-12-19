@@ -1,400 +1,138 @@
-// src/config/cloudinary.js
 import { v2 as cloudinary } from 'cloudinary';
-import { CloudinaryStorage } from 'multer-storage-cloudinary';
-import multer from 'multer';
-import { createLogger } from '../utils/logger.util.js';
+import stream from 'stream';
+import logger from './logger.js';
 
-const logger = createLogger('Cloudinary');
-
-/**
- * Cloudinary configuration
- */
-const cloudinaryConfig = {
+// Configure Cloudinary
+cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true,
+  secure: true
+});
+
+// Upload options
+const uploadOptions = {
+  folder: 'stackkin',
+  resource_type: 'auto',
+  timeout: 60000, // 60 seconds timeout
+  chunk_size: 6000000 // 6MB chunks for large files
 };
 
-/**
- * Initialize Cloudinary
- */
-export const initializeCloudinary = () => {
-  if (!cloudinaryConfig.cloud_name || !cloudinaryConfig.api_key || !cloudinaryConfig.api_secret) {
-    logger.warn('Cloudinary credentials not fully configured');
-    return false;
-  }
+// Upload stream to Cloudinary
+export const uploadStream = (fileStream, options = {}) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { ...uploadOptions, ...options },
+      (error, result) => {
+        if (error) {
+          logger.error('Cloudinary upload error:', error);
+          reject(error);
+        } else {
+          logger.info('Cloudinary upload successful:', result.public_id);
+          resolve(result);
+        }
+      }
+    );
 
-  cloudinary.config(cloudinaryConfig);
-  logger.info('Cloudinary initialized successfully');
-  return true;
-};
-
-/**
- * Upload folder paths
- */
-export const uploadFolders = {
-  profiles: 'stackkin/profiles',
-  solutions: 'stackkin/solutions',
-  jobs: 'stackkin/jobs',
-  marketplace: 'stackkin/marketplace',
-  squads: 'stackkin/squads',
-  verifications: 'stackkin/verifications',
-  chat: 'stackkin/chat',
-  advertisements: 'stackkin/advertisements',
-  general: 'stackkin/general',
-};
-
-/**
- * Allowed file types
- */
-export const allowedFileTypes = {
-  images: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-  documents: ['application/pdf'],
-  all: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'],
-};
-
-/**
- * Max file size in bytes (10MB)
- */
-export const maxFileSize = parseInt(process.env.MAX_FILE_SIZE, 10) || 10 * 1024 * 1024;
-
-/**
- * File filter function for multer
- * @param {string[]} allowedTypes - Allowed MIME types
- * @returns {Function}
- */
-const createFileFilter = (allowedTypes) => {
-  return (req, file, cb) => {
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Invalid file type. Allowed types: ${allowedTypes.join(', ')}`), false);
-    }
-  };
-};
-
-/**
- * Create Cloudinary storage configuration
- * @param {string} folder - Upload folder
- * @param {Object} options - Additional options
- * @returns {CloudinaryStorage}
- */
-export const createCloudinaryStorage = (folder, options = {}) => {
-  return new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder,
-      allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf'],
-      transformation: options.transformation || [{ quality: 'auto' }],
-      resource_type: options.resourceType || 'auto',
-      public_id: (req, file) => {
-        const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        const fileNameWithoutExt = file.originalname.split('.')[0];
-        return `${fileNameWithoutExt}-${uniqueSuffix}`;
-      },
-      ...options.params,
-    },
+    fileStream.pipe(uploadStream);
   });
 };
 
-/**
- * Upload configurations for different use cases
- */
-export const uploadConfigs = {
-  /**
-   * Profile image upload
-   */
-  profileImage: multer({
-    storage: createCloudinaryStorage(uploadFolders.profiles, {
-      transformation: [
-        { width: 500, height: 500, crop: 'fill', gravity: 'face' },
-        { quality: 'auto' },
-      ],
-    }),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.images),
-  }),
-
-  /**
-   * Solution attachments upload
-   */
-  solutionAttachment: multer({
-    storage: createCloudinaryStorage(uploadFolders.solutions),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.all),
-  }),
-
-  /**
-   * Marketplace listing images
-   */
-  marketplaceImage: multer({
-    storage: createCloudinaryStorage(uploadFolders.marketplace, {
-      transformation: [
-        { width: 1200, height: 800, crop: 'limit' },
-        { quality: 'auto' },
-      ],
-    }),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.images),
-  }),
-
-  /**
-   * Verification documents
-   */
-  verificationDocument: multer({
-    storage: createCloudinaryStorage(uploadFolders.verifications, {
-      resourceType: 'image',
-    }),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.all),
-  }),
-
-  /**
-   * Squad logo upload
-   */
-  squadLogo: multer({
-    storage: createCloudinaryStorage(uploadFolders.squads, {
-      transformation: [
-        { width: 400, height: 400, crop: 'fill' },
-        { quality: 'auto' },
-      ],
-    }),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.images),
-  }),
-
-  /**
-   * Chat attachments
-   */
-  chatAttachment: multer({
-    storage: createCloudinaryStorage(uploadFolders.chat),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.all),
-  }),
-
-  /**
-   * Advertisement images
-   */
-  advertisementImage: multer({
-    storage: createCloudinaryStorage(uploadFolders.advertisements, {
-      transformation: [
-        { width: 1200, height: 628, crop: 'fill' },
-        { quality: 'auto' },
-      ],
-    }),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.images),
-  }),
-
-  /**
-   * General file upload
-   */
-  generalUpload: multer({
-    storage: createCloudinaryStorage(uploadFolders.general),
-    limits: { fileSize: maxFileSize },
-    fileFilter: createFileFilter(allowedFileTypes.all),
-  }),
-};
-
-/**
- * Upload file to Cloudinary directly
- * @param {string} filePath - Local file path or URL
- * @param {Object} options - Upload options
- * @returns {Promise<Object>}
- */
+// Upload file by path
 export const uploadFile = async (filePath, options = {}) => {
   try {
     const result = await cloudinary.uploader.upload(filePath, {
-      folder: options.folder || uploadFolders.general,
-      resource_type: options.resourceType || 'auto',
-      transformation: options.transformation,
-      ...options,
+      ...uploadOptions,
+      ...options
     });
-
-    return {
-      success: true,
-      publicId: result.public_id,
-      url: result.secure_url,
-      format: result.format,
-      width: result.width,
-      height: result.height,
-      bytes: result.bytes,
-    };
+    
+    logger.info('File uploaded to Cloudinary:', result.public_id);
+    return result;
   } catch (error) {
-    logger.error('Cloudinary upload error:', error);
-    return {
-      success: false,
-      error: error.message,
-    };
+    logger.error('Cloudinary file upload error:', error);
+    throw error;
   }
 };
 
-/**
- * Upload file from buffer
- * @param {Buffer} buffer - File buffer
- * @param {Object} options - Upload options
- * @returns {Promise<Object>}
- */
-export const uploadFromBuffer = async (buffer, options = {}) => {
+// Upload base64 image
+export const uploadBase64 = async (base64Data, options = {}) => {
   try {
-    return new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: options.folder || uploadFolders.general,
-          resource_type: options.resourceType || 'auto',
-          transformation: options.transformation,
-          ...options,
-        },
-        (error, result) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve({
-              success: true,
-              publicId: result.public_id,
-              url: result.secure_url,
-              format: result.format,
-              width: result.width,
-              height: result.height,
-              bytes: result.bytes,
-            });
-          }
-        }
-      );
-
-      uploadStream.end(buffer);
+    // Remove data URL prefix if present
+    const base64String = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    
+    const result = await cloudinary.uploader.upload(`data:image/png;base64,${base64String}`, {
+      ...uploadOptions,
+      ...options
     });
+    
+    logger.info('Base64 image uploaded to Cloudinary:', result.public_id);
+    return result;
   } catch (error) {
-    logger.error('Cloudinary buffer upload error:', error);
-    return {
-      success: false,
-      error: error.message,
-    };
+    logger.error('Cloudinary base64 upload error:', error);
+    throw error;
   }
 };
 
-/**
- * Delete file from Cloudinary
- * @param {string} publicId - Cloudinary public ID
- * @param {string} resourceType - Resource type (image, video, raw)
- * @returns {Promise<Object>}
- */
-export const deleteFile = async (publicId, resourceType = 'image') => {
+// Delete file from Cloudinary
+export const deleteFile = async (publicId, options = {}) => {
   try {
-    const result = await cloudinary.uploader.destroy(publicId, {
-      resource_type: resourceType,
-    });
-
-    return {
-      success: result.result === 'ok',
-      result: result.result,
-    };
+    const result = await cloudinary.uploader.destroy(publicId, options);
+    
+    if (result.result === 'ok') {
+      logger.info('File deleted from Cloudinary:', publicId);
+      return true;
+    } else {
+      logger.warn('Cloudinary delete result:', result);
+      return false;
+    }
   } catch (error) {
     logger.error('Cloudinary delete error:', error);
-    return {
-      success: false,
-      error: error.message,
-    };
+    throw error;
   }
 };
 
-/**
- * Delete multiple files from Cloudinary
- * @param {string[]} publicIds - Array of public IDs
- * @param {string} resourceType - Resource type
- * @returns {Promise<Object>}
- */
-export const deleteFiles = async (publicIds, resourceType = 'image') => {
-  try {
-    const result = await cloudinary.api.delete_resources(publicIds, {
-      resource_type: resourceType,
-    });
-
-    return {
-      success: true,
-      deleted: result.deleted,
-    };
-  } catch (error) {
-    logger.error('Cloudinary bulk delete error:', error);
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
-};
-
-/**
- * Generate transformation URL
- * @param {string} publicId - Cloudinary public ID
- * @param {Object} transformations - Transformation options
- * @returns {string}
- */
-export const getTransformedUrl = (publicId, transformations = {}) => {
+// Generate image URL with transformations
+export const generateImageUrl = (publicId, transformations = {}) => {
   return cloudinary.url(publicId, {
     secure: true,
-    ...transformations,
+    ...transformations
   });
 };
 
-/**
- * Generate thumbnail URL
- * @param {string} publicId - Cloudinary public ID
- * @param {number} width - Thumbnail width
- * @param {number} height - Thumbnail height
- * @returns {string}
- */
-export const getThumbnailUrl = (publicId, width = 150, height = 150) => {
-  return cloudinary.url(publicId, {
-    secure: true,
-    transformation: [
-      { width, height, crop: 'fill', gravity: 'auto' },
-      { quality: 'auto' },
-    ],
-  });
+// Generate responsive image URLs
+export const generateResponsiveUrls = (publicId, sizes = [100, 300, 600, 1200]) => {
+  return sizes.map(size => ({
+    width: size,
+    url: cloudinary.url(publicId, {
+      width: size,
+      crop: 'scale',
+      quality: 'auto',
+      fetch_format: 'auto'
+    })
+  }));
 };
 
-/**
- * Cloudinary health check
- * @returns {Promise<Object>}
- */
-export const checkCloudinaryHealth = async () => {
+// Check Cloudinary configuration
+export const checkCloudinaryConfig = () => {
+  const config = cloudinary.config();
+  
+  if (!config.cloud_name || !config.api_key || !config.api_secret) {
+    logger.error('Cloudinary configuration incomplete');
+    return false;
+  }
+  
+  return true;
+};
+
+// Get Cloudinary usage statistics
+export const getUsageStats = async () => {
   try {
-    const result = await cloudinary.api.ping();
-    return {
-      status: 'connected',
-      healthy: result.status === 'ok',
-    };
+    const result = await cloudinary.api.usage();
+    return result;
   } catch (error) {
-    return {
-      status: 'error',
-      healthy: false,
-      message: error.message,
-    };
+    logger.error('Failed to get Cloudinary usage stats:', error);
+    return null;
   }
 };
 
-/**
- * Export Cloudinary instance
- */
-export { cloudinary };
-
-/**
- * Cloudinary configuration export
- */
-export default {
-  initialize: initializeCloudinary,
-  cloudinary,
-  uploadFolders,
-  allowedFileTypes,
-  maxFileSize,
-  uploadConfigs,
-  uploadFile,
-  uploadFromBuffer,
-  deleteFile,
-  deleteFiles,
-  getTransformedUrl,
-  getThumbnailUrl,
-  healthCheck: checkCloudinaryHealth,
-  createCloudinaryStorage,
-};
+export default cloudinary;

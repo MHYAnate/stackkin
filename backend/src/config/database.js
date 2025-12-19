@@ -1,169 +1,114 @@
-// src/config/database.js
 import mongoose from 'mongoose';
-import { createLogger } from '../utils/logger.util.js';
+import logger from './logger.js';
 
-const logger = createLogger('Database');
-
-/**
- * MongoDB connection options
- */
-const connectionOptions = {
-  maxPoolSize: 10,
-  minPoolSize: 5,
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-  family: 4, // Use IPv4
-  retryWrites: true,
-  w: 'majority',
-};
-
-/**
- * Database connection state
- */
-let isConnected = false;
-
-/**
- * Connect to MongoDB
- * @returns {Promise<typeof mongoose>}
- */
-export const connectDatabase = async () => {
-  if (isConnected) {
-    logger.info('Using existing database connection');
-    return mongoose;
-  }
-
-  const mongoUri = process.env.MONGODB_URI;
-
-  if (!mongoUri) {
-    throw new Error('MONGODB_URI is not defined in environment variables');
-  }
-
+const connectDatabase = async () => {
   try {
-    // Set mongoose configurations
-    mongoose.set('strictQuery', true);
+    const MONGODB_URI = process.env.NODE_ENV === 'test' 
+      ? process.env.MONGODB_TEST_URI 
+      : process.env.MONGODB_URI;
+
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI is not defined in environment variables');
+    }
+
+    // Mongoose connection options
+    const options = {
+      maxPoolSize: 10, // Maintain up to 10 socket connections
+      serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+      socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+      family: 4, // Use IPv4, skip trying IPv6
+      retryWrites: true,
+      w: 'majority'
+    };
 
     // Connect to MongoDB
-    const connection = await mongoose.connect(mongoUri, connectionOptions);
+    await mongoose.connect(MONGODB_URI, options);
 
-    isConnected = true;
-    logger.info(`MongoDB connected: ${connection.connection.host}`);
+    logger.info(`Connected to MongoDB: ${mongoose.connection.name}`);
+    logger.info(`MongoDB Host: ${mongoose.connection.host}:${mongoose.connection.port}`);
 
-    // Connection event handlers
-    mongoose.connection.on('connected', () => {
-      logger.info('Mongoose connected to MongoDB');
+    // Event listeners for MongoDB connection
+    mongoose.connection.on('connecting', () => {
+      logger.info('Connecting to MongoDB...');
     });
 
-    mongoose.connection.on('error', (err) => {
-      logger.error('Mongoose connection error:', err);
-      isConnected = false;
+    mongoose.connection.on('connected', () => {
+      logger.info('MongoDB connected');
     });
 
     mongoose.connection.on('disconnected', () => {
-      logger.warn('Mongoose disconnected from MongoDB');
-      isConnected = false;
+      logger.warn('MongoDB disconnected');
     });
 
-    // Graceful shutdown
+    mongoose.connection.on('reconnected', () => {
+      logger.info('MongoDB reconnected');
+    });
+
+    mongoose.connection.on('error', (error) => {
+      logger.error('MongoDB connection error:', error);
+    });
+
+    // Handle application termination
     process.on('SIGINT', async () => {
-      await mongoose.connection.close();
-      logger.info('Mongoose connection closed due to app termination');
-      process.exit(0);
+      try {
+        await mongoose.connection.close();
+        logger.info('MongoDB connection closed due to app termination');
+        process.exit(0);
+      } catch (error) {
+        logger.error('Error closing MongoDB connection:', error);
+        process.exit(1);
+      }
     });
 
-    process.on('SIGTERM', async () => {
-      await mongoose.connection.close();
-      logger.info('Mongoose connection closed due to SIGTERM');
-      process.exit(0);
-    });
-
-    return connection;
+    return mongoose.connection;
   } catch (error) {
-    logger.error('MongoDB connection error:', error);
-    isConnected = false;
-    throw error;
+    logger.error('Failed to connect to MongoDB:', error);
+    process.exit(1);
   }
 };
 
-/**
- * Disconnect from MongoDB
- * @returns {Promise<void>}
- */
-export const disconnectDatabase = async () => {
-  if (!isConnected) {
-    logger.info('No active database connection to disconnect');
-    return;
-  }
-
-  try {
-    await mongoose.connection.close();
-    isConnected = false;
-    logger.info('MongoDB disconnected successfully');
-  } catch (error) {
-    logger.error('Error disconnecting from MongoDB:', error);
-    throw error;
-  }
-};
-
-/**
- * Check database connection status
- * @returns {boolean}
- */
-export const isDatabaseConnected = () => {
-  return isConnected && mongoose.connection.readyState === 1;
-};
-
-/**
- * Get database connection instance
- * @returns {mongoose.Connection}
- */
-export const getConnection = () => {
-  return mongoose.connection;
-};
-
-/**
- * Database health check
- * @returns {Promise<Object>}
- */
+// MongoDB health check
 export const checkDatabaseHealth = async () => {
   try {
-    if (!isConnected) {
-      return {
-        status: 'disconnected',
-        healthy: false,
-        message: 'Database is not connected',
-      };
-    }
-
-    // Ping the database
+    // Check if we can run a simple command
     await mongoose.connection.db.admin().ping();
-
     return {
-      status: 'connected',
-      healthy: true,
+      status: 'healthy',
+      database: mongoose.connection.name,
       host: mongoose.connection.host,
-      name: mongoose.connection.name,
-      readyState: mongoose.connection.readyState,
+      port: mongoose.connection.port,
+      readyState: mongoose.connection.readyState
     };
   } catch (error) {
     return {
-      status: 'error',
-      healthy: false,
-      message: error.message,
+      status: 'unhealthy',
+      error: error.message,
+      readyState: mongoose.connection.readyState
     };
   }
 };
 
-/**
- * Database configuration object
- */
-export const databaseConfig = {
-  uri: process.env.MONGODB_URI,
-  options: connectionOptions,
-  connect: connectDatabase,
-  disconnect: disconnectDatabase,
-  isConnected: isDatabaseConnected,
-  getConnection,
-  healthCheck: checkDatabaseHealth,
+// Create indexes function
+export const createIndexes = async () => {
+  try {
+    // Get all models
+    const models = mongoose.modelNames();
+    
+    for (const modelName of models) {
+      const model = mongoose.model(modelName);
+      
+      // Check if model has createIndexes method
+      if (model.createIndexes) {
+        await model.createIndexes();
+        logger.info(`Created indexes for model: ${modelName}`);
+      }
+    }
+    
+    logger.info('All indexes created successfully');
+  } catch (error) {
+    logger.error('Error creating indexes:', error);
+    throw error;
+  }
 };
 
-export default databaseConfig;
+export default connectDatabase;
