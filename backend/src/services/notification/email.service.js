@@ -403,6 +403,153 @@ class EmailService {
       throw error;
     }
   }
+
+  // Add these methods to the existing EmailService class
+
+// Send payment confirmation email
+async sendPaymentConfirmation(to, name, amount, txnRef) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: `${process.env.EMAIL_FROM_NAME} <${process.env.EMAIL_FROM}>`,
+      to,
+      subject: 'Payment Confirmation - Stackkin',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .payment-details { background: white; padding: 20px; border-radius: 10px; margin: 20px 0; }
+            .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Payment Confirmed! 🎉</h1>
+            </div>
+            <div class="content">
+              <h2>Hi ${name},</h2>
+              <p>Your payment has been successfully processed and confirmed.</p>
+              
+              <div class="payment-details">
+                <h3>Payment Details:</h3>
+                <p><strong>Amount:</strong> ₦${amount.toFixed(2)}</p>
+                <p><strong>Transaction Reference:</strong> ${txnRef}</p>
+                <p><strong>Date:</strong> ${new Date().toLocaleDateString('en-NG')}</p>
+                <p><strong>Status:</strong> <span style="color: #28a745; font-weight: bold;">Completed</span></p>
+              </div>
+              
+              <p>You can view the details of this transaction in your account dashboard.</p>
+              
+              <p style="text-align: center; margin: 30px 0;">
+                <a href="${process.env.CLIENT_URL}/dashboard/transactions" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                  View Transaction
+                </a>
+              </p>
+              
+              <div class="footer">
+                <p>Best regards,<br>The Stackkin Team</p>
+                <p>Need help? Contact our support team at <a href="mailto:${process.env.EMAIL_REPLY_TO}">${process.env.EMAIL_REPLY_TO}</a></p>
+                <p>© ${new Date().getFullYear()} Stackkin. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    });
+
+    if (error) {
+      logger.error('Send payment confirmation email error:', error);
+      return false;
+    }
+
+    logger.info(`Payment confirmation email sent to: ${to}`);
+    return true;
+    
+  } catch (error) {
+    logger.error('Send payment confirmation email error:', error);
+    return false;
+  }
+}
+
+// Send transfer failure alert to admin
+async sendTransferFailureAlert(to, userEmail, amount, txnRef, reason) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: `${process.env.EMAIL_FROM_NAME} <${process.env.EMAIL_FROM}>`,
+      to,
+      subject: '🚨 Transfer Failure Alert - Stackkin',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .alert-box { background: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 5px; margin: 20px 0; }
+            .details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
+            .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Transfer Failed 🚨</h1>
+            </div>
+            <div class="content">
+              <div class="alert-box">
+                <h3>⚠️ Attention Required: Bank Transfer Failed</h3>
+                <p>A bank transfer has failed and requires your attention.</p>
+              </div>
+              
+              <div class="details">
+                <h4>Transfer Details:</h4>
+                <p><strong>User Email:</strong> ${userEmail}</p>
+                <p><strong>Amount:</strong> ₦${amount.toFixed(2)}</p>
+                <p><strong>Transaction Reference:</strong> ${txnRef}</p>
+                <p><strong>Failure Reason:</strong> ${reason}</p>
+                <p><strong>Time:</strong> ${new Date().toLocaleString('en-NG')}</p>
+              </div>
+              
+              <p><strong>Required Action:</strong></p>
+              <ol>
+                <li>Review the transaction in the admin dashboard</li>
+                <li>Check Zainpay dashboard for more details</li>
+                <li>Contact the user if necessary</li>
+                <li>Investigate potential system issues</li>
+              </ol>
+              
+              <div class="footer">
+                <p>This is an automated alert from Stackkin Payment System.</p>
+                <p>© ${new Date().getFullYear()} Stackkin. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    });
+
+    if (error) {
+      logger.error('Send transfer failure alert error:', error);
+      return false;
+    }
+
+    logger.info(`Transfer failure alert sent to: ${to}`);
+    return true;
+    
+  } catch (error) {
+    logger.error('Send transfer failure alert error:', error);
+    return false;
+  }
+}
 }
 
 export default new EmailService();
