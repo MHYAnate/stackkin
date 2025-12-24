@@ -46,6 +46,25 @@ export const paymentResolvers = {
       if (!transaction) throw new Error('Transaction not found');
       
       return await paymentService.verifyPayment(txnRef);
+    },
+    
+    // Additional resolvers for type definitions
+    myWallet: async (_, __, { user }) => {
+      if (!user) throw new Error('Authentication required');
+      // Implementation needed
+    },
+    
+    myTransactions: async (_, { filter, pagination }, { user }) => {
+      if (!user) throw new Error('Authentication required');
+      return await paymentService.getTransactionHistory(user.id, filter);
+    },
+    
+    initializePayment: async (_, { input }, { user }) => {
+      if (!user) throw new Error('Authentication required');
+      return await paymentService.createPayment({
+        userId: user.id,
+        ...input
+      });
     }
   },
   
@@ -103,6 +122,17 @@ export const paymentResolvers = {
       if (!transaction) throw new Error('Transaction not found');
       
       return await paymentService.refundPayment(transactionId, reason);
+    },
+    
+    // Additional mutation resolvers
+    processPayment: async (_, { paymentId }, { user }) => {
+      if (!user) throw new Error('Authentication required');
+      // Implementation needed
+    },
+    
+    requestWithdrawal: async (_, { input }, { user }) => {
+      if (!user) throw new Error('Authentication required');
+      // Implementation needed
     }
   }
 };

@@ -8,6 +8,7 @@ import Solution from '../../models/Solution.js';
 import Job from '../../models/Job.js';
 import Subscription from '../../models/Subscription.js';
 import MarketplaceListing from '../../models/MarketplaceListing.js';
+import crypto from 'crypto';
 import { 
   AppError, 
   PaymentError, 
@@ -27,6 +28,8 @@ class PaymentService {
       'zainpay': zainpayService
     };
     this.redis = getRedisClient();
+    this.emailService = emailService;
+    this.notificationService = notificationService;
     
     // Initialize payment types and pricing
     this.initPricing();
@@ -717,7 +720,7 @@ class PaymentService {
       // Send confirmation email
       const user = await User.findById(transaction.userId);
       if (user) {
-        await emailService.sendPremiumUpgradeConfirmation(
+        await this.emailService.sendPremiumUpgradeConfirmation(
           user.email,
           user.firstName,
           solution,
@@ -812,14 +815,14 @@ class PaymentService {
         return;
       }
 
-      await emailService.sendPremiumUpgradeConfirmation(
+      await this.emailService.sendPremiumUpgradeConfirmation(
         user.email,
         user.firstName,
         solution,
         transaction
       );
 
-      await notificationService.createNotification({
+      await this.notificationService.createNotification({
         userId: user._id,
         type: 'payment_success',
         title: 'Premium Upgrade Successful',
@@ -898,7 +901,8 @@ class PaymentService {
     }
   }
 
-  async getPaymentStatistics(userId) {
+  // Renamed from getPaymentStatistics to getUserPaymentStatistics
+  async getUserPaymentStatistics(userId) {
     try {
       const stats = await Transaction.aggregate([
         { $match: { userId } },
@@ -940,70 +944,7 @@ class PaymentService {
       };
       
     } catch (error) {
-      logger.error('Get payment statistics error:', error);
-      throw error;
-    }
-  }
-
-  async refundPayment(transactionId, reason) {
-    try {
-      const transaction = await Transaction.findById(transactionId);
-      if (!transaction) {
-        throw new NotFoundError('Transaction not found');
-      }
-
-      if (transaction.status !== 'success') {
-        throw new ValidationError('Only successful transactions can be refunded');
-      }
-
-      // Check if already refunded
-      const existingRefund = await Transaction.findOne({
-        'metadata.refundOf': transactionId
-      });
-
-      if (existingRefund) {
-        throw new ValidationError('Transaction already refunded');
-      }
-
-      // Create refund transaction
-      const refundTransaction = new Transaction({
-        userId: transaction.userId,
-        txnRef: `REFUND_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        type: 'refund',
-        amount: transaction.amount,
-        status: 'processing',
-        gateway: transaction.gateway,
-        paymentMethod: transaction.paymentMethod,
-        description: `Refund for transaction ${transaction.txnRef}: ${reason}`,
-        metadata: {
-          refundOf: transactionId,
-          reason
-        }
-      });
-
-      await refundTransaction.save();
-
-      // Update original transaction
-      transaction.status = 'refunded';
-      await transaction.save();
-
-      // Update related payment
-      await Payment.findOneAndUpdate(
-        { transactionId: transaction._id },
-        { status: 'refunded' }
-      );
-
-      logger.info('Refund initiated:', {
-        transactionId,
-        refundTransactionId: refundTransaction._id,
-        amount: transaction.amount,
-        reason
-      });
-
-      return refundTransaction;
-      
-    } catch (error) {
-      logger.error('Refund payment error:', error);
+      logger.error('Get user payment statistics error:', error);
       throw error;
     }
   }
@@ -1095,6 +1036,578 @@ class PaymentService {
 
   getPremiumUpgradePrice() {
     return this.pricing.solutionPremiumUpgrade;
+  }
+
+  // ==========================================
+  // ADMIN STATISTICS METHODS
+  // ==========================================
+
+  async getPaymentStatistics(startDate, endDate, groupBy = 'DAY') {
+    try {
+      const matchStage = { status: 'completed' };
+      
+      if (startDate) {
+        matchStage.createdAt = { $gte: new Date(startDate) };
+      }
+      if (endDate) {
+        if (!matchStage.createdAt) matchStage.createdAt = {};
+        matchStage.createdAt.$lte = new Date(endDate);
+      }
+      
+      let groupStage;
+      const now = new Date();
+      
+      switch (groupBy) {
+        case 'DAY':
+          groupStage = {
+            $group: {
+              _id: {
+                year: { $year: '$createdAt' },
+                month: { $month: '$createdAt' },
+                day: { $dayOfMonth: '$createdAt' }
+              },
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              successful: {
+                $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+              },
+              failed: {
+                $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+              }
+            }
+          };
+          break;
+          
+        case 'WEEK':
+          groupStage = {
+            $group: {
+              _id: {
+                year: { $year: '$createdAt' },
+                week: { $week: '$createdAt' }
+              },
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              successful: {
+                $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+              },
+              failed: {
+                $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+              }
+            }
+          };
+          break;
+          
+        case 'MONTH':
+          groupStage = {
+            $group: {
+              _id: {
+                year: { $year: '$createdAt' },
+                month: { $month: '$createdAt' }
+              },
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              successful: {
+                $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+              },
+              failed: {
+                $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+              }
+            }
+          };
+          break;
+          
+        case 'YEAR':
+          groupStage = {
+            $group: {
+              _id: { year: { $year: '$createdAt' } },
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              successful: {
+                $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+              },
+              failed: {
+                $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+              }
+            }
+          };
+          break;
+          
+        case 'TYPE':
+          groupStage = {
+            $group: {
+              _id: '$type',
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              percentage: { $avg: 1 }
+            }
+          };
+          break;
+          
+        case 'METHOD':
+          groupStage = {
+            $group: {
+              _id: '$paymentMethod',
+              count: { $sum: 1 },
+              volume: { $sum: '$amount' },
+              percentage: { $avg: 1 },
+              successRate: {
+                $avg: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+              }
+            }
+          };
+          break;
+          
+        default:
+          throw new ValidationError('Invalid groupBy value');
+      }
+      
+      // Get overall stats
+      const totalStats = await Transaction.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: null,
+            totalPayments: { $sum: 1 },
+            successfulPayments: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            },
+            failedPayments: {
+              $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+            },
+            totalVolume: { $sum: '$amount' },
+            averageTransactionValue: { $avg: '$amount' },
+            platformRevenue: { $sum: { $multiply: ['$amount', 0.025] } }, // 2.5% platform fee
+            gatewayRevenue: { $sum: { $multiply: ['$amount', 0.015] } } // 1.5% gateway fee
+          }
+        }
+      ]);
+      
+      // Get stats by type
+      const statsByType = await Transaction.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: '$type',
+            count: { $sum: 1 },
+            volume: { $sum: '$amount' }
+          }
+        },
+        {
+          $addFields: {
+            type: '$_id',
+            percentage: {
+              $multiply: [
+                { $divide: ['$count', totalStats[0]?.totalPayments || 1] },
+                100
+              ]
+            }
+          }
+        },
+        { $project: { _id: 0 } }
+      ]);
+      
+      // Get stats by method
+      const statsByMethod = await Transaction.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: '$paymentMethod',
+            count: { $sum: 1 },
+            volume: { $sum: '$amount' },
+            successful: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            }
+          }
+        },
+        {
+          $addFields: {
+            method: '$_id',
+            percentage: {
+              $multiply: [
+                { $divide: ['$count', totalStats[0]?.totalPayments || 1] },
+                100
+              ]
+            },
+            successRate: {
+              $multiply: [
+                { $divide: ['$successful', '$count'] },
+                100
+              ]
+            }
+          }
+        },
+        { $project: { _id: 0 } }
+      ]);
+      
+      // Get today's stats
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      
+      const todayStats = await Transaction.aggregate([
+        {
+          $match: {
+            ...matchStage,
+            createdAt: { $gte: todayStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            volume: { $sum: '$amount' },
+            successful: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            },
+            failed: {
+              $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      // Get this week's stats
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      weekStart.setHours(0, 0, 0, 0);
+      
+      const weekStats = await Transaction.aggregate([
+        {
+          $match: {
+            ...matchStage,
+            createdAt: { $gte: weekStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            volume: { $sum: '$amount' },
+            successful: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            },
+            failed: {
+              $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      // Get this month's stats
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
+      
+      const monthStats = await Transaction.aggregate([
+        {
+          $match: {
+            ...matchStage,
+            createdAt: { $gte: monthStart }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            volume: { $sum: '$amount' },
+            successful: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            },
+            failed: {
+              $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      const total = totalStats[0] || {
+        totalPayments: 0,
+        successfulPayments: 0,
+        failedPayments: 0,
+        totalVolume: 0,
+        averageTransactionValue: 0,
+        platformRevenue: 0,
+        gatewayRevenue: 0
+      };
+      
+      const today = todayStats[0] || { count: 0, volume: 0, successful: 0, failed: 0 };
+      const thisWeek = weekStats[0] || { count: 0, volume: 0, successful: 0, failed: 0 };
+      const thisMonth = monthStats[0] || { count: 0, volume: 0, successful: 0, failed: 0 };
+      
+      return {
+        totalPayments: total.totalPayments,
+        successfulPayments: total.successfulPayments,
+        failedPayments: total.failedPayments,
+        totalVolume: total.totalVolume,
+        averageTransactionValue: total.averageTransactionValue,
+        conversionRate: total.totalPayments > 0 
+          ? (total.successfulPayments / total.totalPayments) * 100 
+          : 0,
+        byType: statsByType,
+        byMethod: statsByMethod,
+        platformRevenue: total.platformRevenue,
+        gatewayRevenue: total.gatewayRevenue,
+        netRevenue: total.platformRevenue - total.gatewayRevenue,
+        today: {
+          date: todayStart,
+          count: today.count,
+          volume: today.volume,
+          successful: today.successful,
+          failed: today.failed
+        },
+        thisWeek: {
+          week: Math.ceil((new Date().getDate() + 6) / 7),
+          year: new Date().getFullYear(),
+          count: thisWeek.count,
+          volume: thisWeek.volume,
+          successful: thisWeek.successful,
+          failed: thisWeek.failed
+        },
+        thisMonth: {
+          month: new Date().getMonth() + 1,
+          year: new Date().getFullYear(),
+          count: thisMonth.count,
+          volume: thisMonth.volume,
+          successful: thisMonth.successful,
+          failed: thisMonth.failed
+        }
+      };
+      
+    } catch (error) {
+      logger.error('Get payment statistics error:', error);
+      throw error;
+    }
+  }
+
+  async retryPayment(paymentId) {
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError('Payment not found');
+      }
+      
+      if (payment.status !== 'failed') {
+        throw new ValidationError('Can only retry failed payments');
+      }
+      
+      // Reset payment status
+      payment.status = 'pending';
+      payment.metadata.retryAttempts = (payment.metadata.retryAttempts || 0) + 1;
+      payment.metadata.lastRetryAt = new Date();
+      await payment.save();
+      
+      // If it's a virtual account payment, generate new account details
+      if (payment.paymentMethod === 'virtual_account') {
+        const user = await User.findById(payment.userId);
+        const virtualAccount = await this.gateways.zainpay.createDynamicVirtualAccount({
+          userId: payment.userId,
+          amount: payment.amount / 100, // Convert from kobo to Naira
+          email: user.email,
+          metadata: {
+            ...payment.metadata,
+            originalPaymentId: paymentId,
+            retry: true
+          }
+        });
+        
+        // Update payment with new reference
+        payment.gatewayRef = virtualAccount.txnRef;
+        payment.metadata.virtualAccountId = virtualAccount.virtualAccountId;
+        await payment.save();
+        
+        return {
+          success: true,
+          payment,
+          virtualAccountDetails: virtualAccount
+        };
+      }
+      
+      return { success: true, payment };
+      
+    } catch (error) {
+      logger.error('Retry payment error:', error);
+      throw error;
+    }
+  }
+
+  // This is the new comprehensive refundPayment method that overrides the old one
+  async refundPayment(input) {
+    try {
+      // Handle both object input and old-style parameters for backward compatibility
+      let paymentId, amount, reason, metadata = {};
+      
+      if (typeof input === 'object' && input.paymentId) {
+        // New style: object parameter
+        ({ paymentId, amount, reason, metadata = {} } = input);
+      } else {
+        // Old style: separate parameters (maintained for backward compatibility)
+        [paymentId, reason] = arguments;
+        amount = undefined; // Will use full amount by default
+      }
+      
+      const payment = await Payment.findById(paymentId);
+      if (!payment) {
+        throw new NotFoundError('Payment not found');
+      }
+      
+      if (payment.status !== 'completed') {
+        throw new ValidationError('Only completed payments can be refunded');
+      }
+      
+      // If amount not specified, refund full amount
+      if (!amount) {
+        amount = payment.amount;
+      }
+      
+      if (amount > payment.amount) {
+        throw new ValidationError('Refund amount cannot exceed original payment amount');
+      }
+      
+      // Check if already refunded
+      const existingRefund = await Transaction.findOne({
+        'metadata.refundOf': paymentId,
+        status: { $in: ['success', 'pending'] }
+      });
+      
+      if (existingRefund) {
+        throw new ValidationError('Refund already in progress or completed');
+      }
+      
+      // Create refund transaction
+      const txnRef = `REFUND_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      const refundTransaction = new Transaction({
+        userId: payment.userId,
+        txnRef,
+        type: 'refund',
+        amount: amount,
+        currency: payment.currency,
+        status: 'pending',
+        gateway: payment.gateway,
+        paymentMethod: payment.paymentMethod,
+        description: `Refund for payment ${payment.reference}: ${reason}`,
+        metadata: {
+          refundOf: paymentId,
+          originalReference: payment.reference,
+          reason,
+          ...metadata
+        }
+      });
+      
+      await refundTransaction.save();
+      
+      // Update payment status
+      payment.status = amount === payment.amount ? 'refunded' : 'partially_refunded';
+      payment.refundedAt = new Date();
+      payment.metadata.refunds = [...(payment.metadata.refunds || []), {
+        transactionId: refundTransaction._id,
+        amount,
+        reason,
+        date: new Date()
+      }];
+      await payment.save();
+      
+      // Process refund based on gateway
+      let refundResult;
+      switch (payment.gateway) {
+        case 'zainpay':
+          // For Zainpay, we need to initiate a transfer back to the original payer
+          // This requires storing the original payer's account details
+          refundResult = await this.gateways.zainpay.transferToBank({
+            userId: payment.userId,
+            amount: amount / 100, // Convert to Naira
+            accountNumber: payment.metadata.senderAccountNumber,
+            bankCode: payment.metadata.senderBankCode,
+            accountName: payment.metadata.senderName,
+            narration: `Refund: ${reason}`,
+            metadata: {
+              refundTransactionId: refundTransaction._id,
+              originalPaymentId: paymentId
+            }
+          });
+          break;
+          
+        default:
+          throw new ValidationError(`Refunds not supported for gateway: ${payment.gateway}`);
+      }
+      
+      // Update refund transaction with gateway reference
+      if (refundResult) {
+        refundTransaction.gatewayRef = refundResult.reference;
+        refundTransaction.status = refundResult.status || 'pending';
+        await refundTransaction.save();
+      }
+      
+      // Notify user
+      const user = await User.findById(payment.userId);
+      if (user) {
+        await this.notificationService.createNotification({
+          userId: user._id,
+          type: 'refund_initiated',
+          title: 'Refund Initiated',
+          message: `Your refund of ₦${(amount / 100).toFixed(2)} has been initiated.`,
+          data: {
+            paymentId,
+            refundTransactionId: refundTransaction._id,
+            amount
+          }
+        });
+        
+        // Send email
+        await this.emailService.sendRefundInitiated(
+          user.email,
+          user.firstName,
+          amount / 100,
+          payment.reference,
+          reason
+        );
+      }
+      
+      logger.info('Refund initiated:', {
+        paymentId,
+        refundTransactionId: refundTransaction._id,
+        amount,
+        reason
+      });
+      
+      return {
+        success: true,
+        refundTransaction,
+        payment
+      };
+      
+    } catch (error) {
+      logger.error('Refund payment error:', error);
+      throw error;
+    }
+  }
+
+  // Helper method to maintain backward compatibility with old refund calls
+  async refundTransaction(transactionId, reason) {
+    try {
+      const transaction = await Transaction.findById(transactionId);
+      if (!transaction) {
+        throw new NotFoundError('Transaction not found');
+      }
+
+      // Find associated payment
+      const payment = await Payment.findOne({ transactionId: transaction._id });
+      if (!payment) {
+        throw new NotFoundError('Payment not found for this transaction');
+      }
+
+      // Use the new refundPayment method
+      return await this.refundPayment({
+        paymentId: payment._id,
+        amount: transaction.amount,
+        reason,
+        metadata: {
+          originalTransactionId: transactionId
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Refund transaction error:', error);
+      throw error;
+    }
   }
 }
 

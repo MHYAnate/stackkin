@@ -1,4 +1,3 @@
-// apps/backend/src/graphql/schema/typeDefs/payment.typeDef.js
 import { gql } from 'apollo-server-express';
 
 export const paymentTypeDef = gql`
@@ -726,17 +725,6 @@ export const paymentTypeDef = gql`
     callbackUrl: String
     status: GatewayStatus
     metadata: JSON
-  }
-
-  # ==========================================
-  # SUBSCRIPTIONS
-  # ==========================================
-
-  extend type Subscription {
-    paymentStatusChanged(paymentId: ID!): Payment!
-    walletUpdated(userId: ID!): Wallet!
-    escrowUpdated(escrowId: ID!): Escrow!
-    newWebhookEvent(gatewayId: ID!): WebhookEvent!
   }
 `;
 
