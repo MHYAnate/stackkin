@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import mongoosePaginate from 'mongoose-paginate-v2';
+import { PAYMENT_STATUS } from '/constants/paymentConstants.js';
 
 const virtualAccountSchema = new mongoose.Schema({
   userId: {
@@ -43,8 +44,14 @@ const virtualAccountSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'success', 'mismatch', 'expired', 'failed'],
-    default: 'pending'
+    enum: [
+      PAYMENT_STATUS.PENDING,
+      PAYMENT_STATUS.SUCCESS,
+      PAYMENT_STATUS.FAILED,
+      PAYMENT_STATUS.EXPIRED,
+      'mismatch' // Keep for backward compatibility
+    ],
+    default: PAYMENT_STATUS.PENDING
   },
   depositedAmount: {
     type: Number,
@@ -101,8 +108,8 @@ virtualAccountSchema.virtual('timeRemaining').get(function() {
 });
 
 virtualAccountSchema.pre('save', function(next) {
-  if (this.isExpired && this.status === 'pending') {
-    this.status = 'expired';
+  if (this.isExpired && this.status === PAYMENT_STATUS.PENDING) {
+    this.status = PAYMENT_STATUS.EXPIRED;
   }
   next();
 });

@@ -1,40 +1,68 @@
 import express from 'express';
 import webhookService from '../services/payment/webhook.service.js';
+import { WebhookSecurity } from '../middleware/webhookSecurity.js';
 import logger from '../config/logger.js';
 
 const router = express.Router();
 
-// Zainpay webhook endpoint
-router.post('/zainpay', express.json({ verify: (req, res, buf) => {
-  req.rawBody = buf.toString();
-} }), async (req, res) => {
-  try {
-    const signature = req.headers['zainpay-signature'];
-    const event = req.body.event;
-    const payload = req.body;
-
-    if (!signature) {
-      return res.status(401).json({ error: 'Missing signature' });
+// Add middleware to capture raw body for signature verification
+const rawBodyMiddleware = (req, res, next) => {
+  req.rawBody = '';
+  req.on('data', chunk => {
+    req.rawBody += chunk.toString();
+  });
+  req.on('end', () => {
+    try {
+      req.body = JSON.parse(req.rawBody);
+      next();
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid JSON payload' });
     }
+  });
+};
 
-    const result = await webhookService.handleZainpayWebhook(event, payload, signature);
+// Zainpay webhook endpoint with enhanced security
+router.post('/zainpay', 
+  rawBodyMiddleware,
+  WebhookSecurity.middleware(),
+  async (req, res) => {
+    try {
+      const { event, data } = req.body;
+      const signature = req.headers['zainpay-signature'];
 
-    res.status(200).json(result);
-    
-  } catch (error) {
-    logger.error('Webhook route error:', error);
-    res.status(400).json({ error: error.message });
-  }
+      logger.info('Processing secure webhook:', { 
+        event, 
+        txnRef: data?.txnRef,
+        ip: req.ip 
+      });
+
+      const result = await webhookService.handleWebhook('zainpay', event, data, signature);
+
+      // Always return 200 to Zainpay to prevent retries
+      res.status(200).json({ 
+        received: true,
+        processed: true,
+        timestamp: new Date().toISOString() 
+      });
+      
+    } catch (error) {
+      logger.error('Webhook route error:', error);
+      // Still return 200 to prevent Zainpay from retrying
+      res.status(200).json({ 
+        received: true,
+        error: error.message,
+        timestamp: new Date().toISOString() 
+      });
+    }
 });
 
-// Zainpay DVA callback endpoint
-router.post('/zainpay/dva-callback', express.json(), async (req, res) => {
+// DVA callback endpoint
+router.post('/zainpay/dva-callback', rawBodyMiddleware, async (req, res) => {
   try {
     const { txnRef, status, depositedAmount } = req.body;
 
-    logger.info('DVA callback received:', { txnRef, status });
+    logger.info('DVA callback received:', { txnRef, status, ip: req.ip });
 
-    // Process the callback
     if (status === 'success') {
       await webhookService.verifyAndProcessZainpayDeposit(txnRef);
     }
@@ -43,16 +71,16 @@ router.post('/zainpay/dva-callback', express.json(), async (req, res) => {
     
   } catch (error) {
     logger.error('DVA callback error:', error);
-    res.status(200).json({ received: true }); // Always return 200 to Zainpay
+    res.status(200).json({ received: true });
   }
 });
 
-// Zainpay card callback endpoint
-router.post('/zainpay/card-callback', express.json(), async (req, res) => {
+// Card callback endpoint
+router.post('/zainpay/card-callback', rawBodyMiddleware, async (req, res) => {
   try {
     const { txnRef, status } = req.body;
 
-    logger.info('Card callback received:', { txnRef, status });
+    logger.info('Card callback received:', { txnRef, status, ip: req.ip });
 
     if (status === 'success') {
       await webhookService.verifyAndProcessCardPayment(txnRef);
